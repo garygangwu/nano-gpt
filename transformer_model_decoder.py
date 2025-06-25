@@ -10,21 +10,6 @@ import argparse
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
-class SimpleTransformerModel(nn.Module):
-    def __init__(self, vocab_size, d_model=2048, nhead=16, num_layers=4):
-        super().__init__()
-        self.embedding = nn.Embedding(vocab_size, d_model)
-        decoder_layer = nn.TransformerDecoderLayer(d_model, nhead, batch_first=True)
-        self.transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers)
-        self.decoder = nn.Linear(d_model, vocab_size)
-
-    def forward(self, src):
-        src = self.embedding(src)
-        src_mask = nn.Transformer.generate_square_subsequent_mask(src.size(1)).to(src.device)
-        transformer_out = self.transformer_decoder(src, src, src_mask)
-        output = self.decoder(transformer_out)
-        return output
-
 class PositionalCoding(nn.Module):
     def __init__(self, d_model, dropout=0.1, max_len=5000):
         super().__init__()
@@ -42,7 +27,7 @@ class PositionalCoding(nn.Module):
         return self.dropout(x)
 
 class TransformerModel(nn.Module):
-    def __init__(self, ntoken, d_model=32, nhead=4, d_hid=64, nlayers=4, dropout=0.5):
+    def __init__(self, ntoken, d_model=512, nhead=8, dim_feedforward=1024, nlayers=4, dropout=0.5):
         super().__init__()
         self.model_type = 'Transformer'
 
@@ -50,7 +35,7 @@ class TransformerModel(nn.Module):
         self.pos_encoder = PositionalCoding(d_model, dropout)
 
         # Transformer Encoder Stack
-        decoder_layers = nn.TransformerDecoderLayer(d_model, nhead, d_hid, dropout, batch_first=True)
+        decoder_layers = nn.TransformerDecoderLayer(d_model, nhead, dim_feedforward=dim_feedforward, dropout=dropout, batch_first=True)
         self.transformer_decoder = nn.TransformerDecoder(decoder_layers, nlayers)
 
         # Token embedding: maps tokens to vectors of size d_model
