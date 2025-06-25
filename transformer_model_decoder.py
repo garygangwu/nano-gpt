@@ -6,9 +6,19 @@ from torch.nn import functional as F
 import glob
 import argparse
 
-# Check if CUDA is available
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f"Using device: {device}")
+MODEL_PARAMS = {
+    'd_model': 256,
+    'nhead': 4,
+    'dim_feedforward': 512,
+    'nlayers': 3,
+    'dropout': 0.4,
+    'lr': 5e-5,
+    'epochs': 3000,
+    'batch_size': 256,
+    'block_size': 128,
+    'max_length': 2000,
+    'temperature': 1.2
+}
 
 class PositionalCoding(nn.Module):
     def __init__(self, d_model, dropout=0.1, max_len=5000):
@@ -27,7 +37,13 @@ class PositionalCoding(nn.Module):
         return self.dropout(x)
 
 class TransformerModel(nn.Module):
-    def __init__(self, ntoken, d_model=512, nhead=8, dim_feedforward=1024, nlayers=4, dropout=0.5):
+    def __init__(self,
+                 ntoken,
+                 d_model=MODEL_PARAMS['d_model'],
+                 nhead=MODEL_PARAMS['nhead'],
+                 dim_feedforward=MODEL_PARAMS['dim_feedforward'],
+                 nlayers=MODEL_PARAMS['nlayers'],
+                 dropout=MODEL_PARAMS['dropout']):
         super().__init__()
         self.model_type = 'Transformer'
 
@@ -65,31 +81,106 @@ class TransformerModel(nn.Module):
         self.decoder.weight.data.uniform_(-initrange, initrange)
 
     def forward(self, src, src_mask=None):
-        # print("!!src", src.shape)
         # Embedding + Scaling (standard practice for transformer)
         src = self.encoder(src) * math.sqrt(self.d_model)
-        # print("!!src2", src.shape)
 
         # Add positional encoding
         src = self.pos_encoder(src)
-        # print("!!src3", src.shape)
 
         src_mask = nn.Transformer.generate_square_subsequent_mask(src.size(1)).to(src.device)
 
         # Transformer Decoder processing
         output = self.transformer_decoder(src, src, src_mask)
-        # print("!!output", output.shape)
 
         output = self.sequence_pooling(output)
-        # print("!!output_pooled", output.shape)
 
         # Project to vocabulary logits
         output = self.decoder(output)
-        # print("!!output_decoder", output.shape)
 
         return output
 
 
+class LabelSmoothingLoss(torch.nn.Module):
+    def __init__(self, smoothing=0.1):
+        super(LabelSmoothingLoss, self).__init__()
+        self.smoothing = smoothing
+
+    def forward(self, pred, target):
+        confidence = 1.0 - self.smoothing
+        logprobs = F.log_softmax(pred, dim=-1)
+
+        nll_loss = -logprobs.gather(dim=-1, index=target.unsqueeze(1)).squeeze(1)
+        smooth_loss = -logprobs.mean(dim=-1)
+
+        loss = confidence * nll_loss + self.smoothing * smooth_loss
+        return loss.mean()
+
+
+class Tokenizer:
+    def __init__(self, raw_text):
+        self.chars = sorted(list(set(raw_text)))
+        self.vocab_size = len(self.chars)
+        self.stoi = {ch: i for i, ch in enumerate(self.chars)}
+        self.itos = {i: ch for i, ch in enumerate(self.chars)}
+
+    def encode(self, s):
+        return [self.stoi[c] for c in s]
+
+    def decode(self, l):
+        return ''.join([self.itos[i] for i in l])
+
+
+class DataManager:
+    def __init__(self, raw_text_list, tokenizer, device,
+                 batch_size=MODEL_PARAMS['batch_size'], block_size=MODEL_PARAMS['block_size']):
+        self.batch_size = batch_size
+        self.block_size = block_size
+        self.device = device
+
+        self.train_data_list = []
+        self.val_data_list = []
+        for raw_text in raw_text_list:
+            data = torch.tensor(tokenizer.encode(raw_text), dtype=torch.long).to(self.device)
+            n = int(0.8 * len(data))
+            self.train_data_list.append(data[:n])
+            self.val_data_list.append(data[n:])
+
+        self.train_data = torch.cat(self.train_data_list)
+        self.val_data = torch.cat(self.val_data_list)
+
+    def get_batch(self, split):
+        # generate a small batch of data of inputs x and targets y
+        data = self.train_data if split == 'train' else self.val_data
+        ix = torch.randint(len(data) - self.block_size, (self.batch_size,))
+        x = torch.stack([data[i:i+self.block_size] for i in ix])
+        y = torch.stack([data[i+1:i+self.block_size+1] for i in ix])
+        return x, y
+
+
+def generate_text(model, start_sequence, tokenizer, max_length=100, temperature=1.0):
+    model.eval()
+    generated_sequence = start_sequence[:]
+
+    for _ in range(max_length):
+        input_tensor = torch.tensor(generated_sequence).unsqueeze(0)  # shape: [1, seq_len]
+        output_logits = model(input_tensor)
+
+        # Take the logits for the last token
+        logits = output_logits[:, -1, :] / temperature
+
+        # Apply softmax and sample
+        probabilities = torch.softmax(logits, dim=-1)
+        next_token_id = torch.multinomial(probabilities, num_samples=1).item()
+
+        # Append token
+        generated_sequence.append(next_token_id)
+
+    return tokenizer.decode(generated_sequence)
+
+
+# Check if CUDA is available
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"Using device: {device}")
 
 raw_text_list = []
 for filename in glob.glob('data/*.txt'):
@@ -98,40 +189,11 @@ for filename in glob.glob('data/*.txt'):
 
 raw_text = ''.join(raw_text_list)
 
-chars = sorted(list(set(raw_text)))
-vocab_size = len(chars)
+# Instantiate the tokenizer
+tokenizer = Tokenizer(raw_text)
 
-#print("chars:", chars)
-#print("vocab_size:", vocab_size)
-
-stoi = { ch:i for i,ch in enumerate(chars) }
-itos = { i:ch for i,ch in enumerate(chars) }
-encode = lambda s: [stoi[c] for c in s] # encoder: take a string, output a list of integers
-decode = lambda l: ''.join([itos[i] for i in l]) # decoder: take a list of integers, output a string
-
-train_data_list = []
-val_data_list = []
-for raw_text in raw_text_list:
-    data = torch.tensor(encode(raw_text), dtype=torch.long).to(device)
-    n = int(0.8 * len(data))
-    train_data_list.append(data[:n])
-    val_data_list.append(data[n:])
-
-train_data = torch.cat(train_data_list)
-val_data = torch.cat(val_data_list)
-
-
-batch_size = 256
-block_size = 128
-
-def get_batch(split):
-    # generate a small batch of data of inputs x and targets y
-    data = train_data if split == 'train' else val_data
-    ix = torch.randint(len(data) - block_size, (batch_size,))
-    x = torch.stack([data[i:i+block_size] for i in ix])
-    y = torch.stack([data[i+1:i+block_size+1] for i in ix])
-    return x, y
-
+# Instantiate DataManager
+data_manager = DataManager(raw_text_list, tokenizer, device, batch_size=256, block_size=128)
 
 # Set up command line argument parsing
 parser = argparse.ArgumentParser(description='Train or load the transformer model')
@@ -146,17 +208,17 @@ if args.training:
     # Training mode
     os.makedirs('intermediate_data', exist_ok=True)
     os.makedirs('model_data', exist_ok=True)
-    model = TransformerModel(vocab_size)
+    model = TransformerModel(tokenizer.vocab_size)
     model = model.to(device)  # Move model to GPU
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    criterion = LabelSmoothingLoss(smoothing=0.1)
+    optimizer = torch.optim.Adam(model.parameters(), lr=MODEL_PARAMS['lr'])
 
     model.train()
     epochs = 3000
 
     for epoch in range(epochs):
         total_loss = 0
-        input_data, target_data = get_batch('train')
+        input_data, target_data = data_manager.get_batch('train')
         # Data is already on GPU from get_batch function
 
         output = model(input_data)
@@ -168,6 +230,7 @@ if args.training:
         loss = F.cross_entropy(output, target_data)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) # Clip gradients
         optimizer.step()
 
         # Track the best validation loss and save the best model separately
@@ -178,7 +241,7 @@ if args.training:
             # Evaluate on validation data
             model.eval()
             with torch.no_grad():
-                val_input, val_target = get_batch('val')
+                val_input, val_target = data_manager.get_batch('val')
                 val_output = model(val_input)
                 Bv, Tv, Cv = val_output.shape
                 val_output = val_output.view(Bv*Tv, Cv)
@@ -194,43 +257,26 @@ if args.training:
                 print(f"New best model saved with Val Loss: {best_val_loss:.4f}")
 
 
-
     # Save the model after training
     torch.save(model.state_dict(), DEFAULT_MODEL_PATH)
     print(f"Model saved to {DEFAULT_MODEL_PATH}")
 
 else:
     # Load mode
-    model = TransformerModel(vocab_size)
+    model = TransformerModel(tokenizer.vocab_size)
     model.load_state_dict(torch.load(args.model_path, map_location=device))
     model = model.to(device)  # Move model to GPU
     print(f"Model loaded from {args.model_path}")
 
 
-test_sentence = "开始"
-
-eval_data = torch.tensor(encode(test_sentence), dtype=torch.long).to(device)
+test_sentence = "唐僧和林黛玉一起打曹操和鲁智深\n"
+eval_data = torch.tensor(tokenizer.encode(test_sentence), dtype=torch.long).to(device)
 print(eval_data)
 
-model.eval()
-with torch.no_grad():
-    for _ in range(2000):
-        #print("input : |", decode(eval_data.tolist()), "|")
-        eval_data_unsqeeuze = eval_data[-block_size:].unsqueeze(0)
-
-        # print("input", eval_data_unsqeeuze)
-        output = model(eval_data_unsqeeuze)
-        # print("output", output)
-        # print("output", output.shape)
-        # print("output_last", output[-1, -1])
-        # print("output_last", output[-1, -1].shape)
-        probs = output[-1, -1].softmax(dim=0)
-        next_token = torch.multinomial(probs, num_samples=1)
-        eval_data = torch.cat((eval_data, next_token), dim=-1)
-
-        #print("output: |", decode(eval_data.tolist()), "|")
-
-print(decode(eval_data.tolist()))
+generated_text = generate_text(model, eval_data, tokenizer,
+                               max_length=MODEL_PARAMS['max_length'],
+                               temperature=MODEL_PARAMS['temperature'])
+print(generated_text)
 
 
 
