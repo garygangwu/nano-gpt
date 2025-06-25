@@ -11,7 +11,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
 class SimpleTransformerModel(nn.Module):
-    def __init__(self, vocab_size, d_model=1024, nhead=8, num_layers=4):
+    def __init__(self, vocab_size, d_model=2048, nhead=16, num_layers=4):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, d_model)
         decoder_layer = nn.TransformerDecoderLayer(d_model, nhead, batch_first=True)
@@ -42,7 +42,7 @@ class PositionalCoding(nn.Module):
         return self.dropout(x)
 
 class TransformerModel(nn.Module):
-    def __init__(self, ntoken, d_model=32, nhead=4, d_hid=64, nlayers=2, dropout=0.5):
+    def __init__(self, ntoken, d_model=32, nhead=4, d_hid=64, nlayers=4, dropout=0.5):
         super().__init__()
         self.model_type = 'Transformer'
 
@@ -159,8 +159,8 @@ args = parser.parse_args()
 
 if args.training:
     # Training mode
-    if not os.path.exists('intermediate_data'):
-        os.makedirs('intermediate_data')
+    os.makedirs('intermediate_data', exist_ok=True)
+    os.makedirs('model_data', exist_ok=True)
     model = TransformerModel(vocab_size)
     model = model.to(device)  # Move model to GPU
     criterion = nn.CrossEntropyLoss()
