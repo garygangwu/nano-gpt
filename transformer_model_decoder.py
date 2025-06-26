@@ -13,11 +13,11 @@ MODEL_PARAMS = {
     'nlayers': 3,
     'dropout': 0.4,
     'lr': 5e-5,
-    'epochs': 3000,
+    'epochs': 5000,
     'batch_size': 256,
     'block_size': 128,
     'max_length': 2000,
-    'temperature': 1.2
+    'temperature': 1.05
 }
 
 class PositionalCoding(nn.Module):
@@ -179,6 +179,11 @@ def generate_text(model, start_sequence, tokenizer, max_length=100, temperature=
     return tokenizer.decode(generated_sequence.tolist())
 
 
+def print_model_params_size(model):
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Total number of parameters: {total_params:,}")
+
+
 # Check if CUDA is available
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
@@ -211,13 +216,13 @@ if args.training:
     os.makedirs('model_data', exist_ok=True)
     model = TransformerModel(tokenizer.vocab_size)
     model = model.to(device)  # Move model to GPU
+    print_model_params_size(model)
     criterion = LabelSmoothingLoss(smoothing=0.1)
     optimizer = torch.optim.Adam(model.parameters(), lr=MODEL_PARAMS['lr'])
 
     model.train()
-    epochs = 3000
 
-    for epoch in range(epochs):
+    for epoch in range(MODEL_PARAMS['epochs']):
         total_loss = 0
         input_data, target_data = data_manager.get_batch('train')
         # Data is already on GPU from get_batch function
@@ -249,7 +254,7 @@ if args.training:
                 val_target = val_target.view(Bv*Tv)
                 val_loss = F.cross_entropy(val_output, val_target)
             model.train()
-            print(f"Epoch {epoch+1}/{epochs}, Train Loss: {loss:.4f}, Val Loss: {val_loss:.4f}")
+            print(f"Epoch {epoch+1}/{MODEL_PARAMS['epochs']}, Train Loss: {loss:.4f}, Val Loss: {val_loss:.4f}")
             torch.save(model.state_dict(), f'intermediate_data/transformer_model_epoch_{epoch+1}.pth')
             # Save the best model based on validation loss
             if val_loss < best_val_loss:
@@ -268,6 +273,7 @@ else:
     model.load_state_dict(torch.load(args.model_path, map_location=device))
     model = model.to(device)  # Move model to GPU
     print(f"Model loaded from {args.model_path}")
+    print_model_params_size(model)
 
 
 test_sentence = "唐僧和林黛玉一起打曹操和鲁智深\n"
