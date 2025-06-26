@@ -207,6 +207,7 @@ parser.add_argument('--training', action='store_true', default=False, help='Trai
 # Default model path constant
 DEFAULT_MODEL_PATH = 'model_data/transformer_model.pth'
 parser.add_argument('--model_path', type=str, default=DEFAULT_MODEL_PATH, help='Path to load the model from')
+parser.add_argument('--start_sentence', type=str, default="林黛玉", help='Start sentence for generation')
 
 args = parser.parse_args()
 
@@ -276,8 +277,7 @@ else:
     print_model_params_size(model)
 
 
-test_sentence = "唐僧和林黛玉一起打曹操和鲁智深\n"
-eval_data = torch.tensor(tokenizer.encode(test_sentence), dtype=torch.long).to(device)
+eval_data = torch.tensor(tokenizer.encode(args.start_sentence + "\n"), dtype=torch.long).to(device)
 print(eval_data)
 
 generated_text = generate_text(model, eval_data, tokenizer,
