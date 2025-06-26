@@ -162,7 +162,7 @@ def generate_text(model, start_sequence, tokenizer, max_length=100, temperature=
     generated_sequence = start_sequence[:]
 
     for _ in range(max_length):
-        input_tensor = torch.tensor(generated_sequence).unsqueeze(0)  # shape: [1, seq_len]
+        input_tensor = generated_sequence.unsqueeze(0)  # shape: [1, seq_len]
         output_logits = model(input_tensor)
 
         # Take the logits for the last token
@@ -173,9 +173,10 @@ def generate_text(model, start_sequence, tokenizer, max_length=100, temperature=
         next_token_id = torch.multinomial(probabilities, num_samples=1).item()
 
         # Append token
-        generated_sequence.append(next_token_id)
+        next_token_tensor = torch.tensor([next_token_id], dtype=torch.long).to(input_tensor.device)
+        generated_sequence = torch.cat([generated_sequence, next_token_tensor])
 
-    return tokenizer.decode(generated_sequence)
+    return tokenizer.decode(generated_sequence.tolist())
 
 
 # Check if CUDA is available
