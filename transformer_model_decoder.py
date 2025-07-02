@@ -13,14 +13,14 @@ MODEL_PARAMS = {
     'nlayers': 3,
     'dropout': 0.4,
     'lr': 5e-5,
-    'epochs': 5000,
-    'batch_size': 256,
+    'epochs': 10000,
+    'batch_size': 512,
     'block_size': 128,
     'max_length': 2000,
     'temperature': 1.05
 }
 
-class PositionalCoding(nn.Module):
+class PositionalEncoding(nn.Module):
     def __init__(self, d_model, dropout=0.1, max_len=5000):
         super().__init__()
         self.dropout = nn.Dropout(dropout)
@@ -36,70 +36,46 @@ class PositionalCoding(nn.Module):
         x = x + self.pe[:x.size(0)]
         return self.dropout(x)
 
+
+# Transformer Decoder Model class
 class TransformerModel(nn.Module):
     def __init__(self,
-                 ntoken,
+                 ntokens,
                  d_model=MODEL_PARAMS['d_model'],
                  nhead=MODEL_PARAMS['nhead'],
                  dim_feedforward=MODEL_PARAMS['dim_feedforward'],
-                 nlayers=MODEL_PARAMS['nlayers'],
+                 num_layers=MODEL_PARAMS['nlayers'],
                  dropout=MODEL_PARAMS['dropout']):
-        super().__init__()
-        self.model_type = 'Transformer'
+         super().__init__()
+         self.model_type = 'Transformer'
+         self.pos_encoder = PositionalEncoding(d_model)
+         self.embedding = nn.Embedding(ntokens, d_model)
 
-        # Positional encoding helps the model capture the order of tokens
-        self.pos_encoder = PositionalCoding(d_model, dropout)
+         decoder_layers = nn.TransformerDecoderLayer(d_model, nhead, dim_feedforward, dropout, batch_first=True)
+         self.transformer_decoder = nn.TransformerDecoder(decoder_layers, num_layers)
 
-        # Transformer Encoder Stack
-        decoder_layers = nn.TransformerDecoderLayer(d_model, nhead, dim_feedforward=dim_feedforward, dropout=dropout, batch_first=True)
-        self.transformer_decoder = nn.TransformerDecoder(decoder_layers, nlayers)
+         self.fc_out = nn.Linear(d_model, ntokens)
 
-        # Token embedding: maps tokens to vectors of size d_model
-        self.encoder = nn.Embedding(ntoken, d_model)
+         self.d_model = d_model
+         self._init_weights()
 
-        # Add a sequence pooling layer
-        self.sequence_pooling = nn.Sequential(
-            nn.Linear(d_model, d_model),  # Transform each position
-            nn.ReLU(),
-            nn.Linear(d_model, d_model),  # Combine information
-            nn.ReLU(),
-            nn.Linear(d_model, d_model)   # Final transformation
-        )
+    def _init_weights(self):
+        # Explicit weight initialization
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
 
-        # Output layer maps back to vocabulary size for prediction
-        self.decoder = nn.Linear(d_model, ntoken)
-
-        self.d_model = d_model
-
-        self.init_weights()
-
-    def init_weights(self):
-        initrange = 0.1
-        # Initialize embedding and decoder weights uniformly
-        self.encoder.weight.data.uniform_(-initrange, initrange)
-        self.decoder.bias.data.zero_()
-        self.decoder.weight.data.uniform_(-initrange, initrange)
-
-    def forward(self, src, src_mask=None):
-        # Embedding + Scaling (standard practice for transformer)
-        src = self.encoder(src) * math.sqrt(self.d_model)
-
-        # Add positional encoding
-        src = self.pos_encoder(src)
-
-        src_mask = nn.Transformer.generate_square_subsequent_mask(src.size(1)).to(src.device)
-
-        # Transformer Decoder processing
-        output = self.transformer_decoder(src, src, src_mask)
-
-        output = self.sequence_pooling(output)
-
-        # Project to vocabulary logits
-        output = self.decoder(output)
-
+    def forward(self, tgt):
+        tgt_emb = self.embedding(tgt) * torch.sqrt(torch.tensor(self.d_model, dtype=torch.float32))
+        tgt_emb = self.pos_encoder(tgt_emb)
+        # The TransformerDecoder requires a non-None memory argument.
+        # For a decoder-only model, we can pass tgt_emb as both tgt and memory.
+        tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt_emb.size(1)).to(tgt_emb.device)
+        output = self.transformer_decoder(tgt_emb, memory=tgt_emb, tgt_mask=tgt_mask)
+        output = self.fc_out(output)
         return output
 
-
+# Label smoothing loss
 class LabelSmoothingLoss(torch.nn.Module):
     def __init__(self, smoothing=0.1):
         super(LabelSmoothingLoss, self).__init__()
@@ -223,6 +199,10 @@ if args.training:
 
     model.train()
 
+    best_val_loss = float('inf')
+    epochs_no_improve = 0
+    patience = 5  # Stop if no improvement for 5 validation checks
+
     for epoch in range(MODEL_PARAMS['epochs']):
         total_loss = 0
         input_data, target_data = data_manager.get_batch('train')
@@ -234,17 +214,13 @@ if args.training:
         output = output.view(B*T, C)
         target_data = target_data.view(B*T)
 
-        loss = F.cross_entropy(output, target_data)
+        loss = criterion(output, target_data)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) # Clip gradients
         optimizer.step()
 
-        # Track the best validation loss and save the best model separately
-        if epoch == 0:
-            best_val_loss = float('inf')
-
-        if (epoch+1) % 200 == 0:
+        if (epoch+1) % 100 == 0:
             # Evaluate on validation data
             model.eval()
             with torch.no_grad():
@@ -253,7 +229,7 @@ if args.training:
                 Bv, Tv, Cv = val_output.shape
                 val_output = val_output.view(Bv*Tv, Cv)
                 val_target = val_target.view(Bv*Tv)
-                val_loss = F.cross_entropy(val_output, val_target)
+                val_loss = criterion(val_output, val_target)
             model.train()
             print(f"Epoch {epoch+1}/{MODEL_PARAMS['epochs']}, Train Loss: {loss:.4f}, Val Loss: {val_loss:.4f}")
             torch.save(model.state_dict(), f'intermediate_data/transformer_model_epoch_{epoch+1}.pth')
@@ -262,11 +238,18 @@ if args.training:
                 best_val_loss = val_loss
                 torch.save(model.state_dict(), 'intermediate_data/transformer_model_best.pth')
                 print(f"New best model saved with Val Loss: {best_val_loss:.4f}")
+                epochs_no_improve = 0
+            else:
+                epochs_no_improve += 1
+                print(f"No improvement in val loss for {epochs_no_improve} validation checks.")
+                if epochs_no_improve >= patience:
+                    print(f"Validation loss did not improve for {patience} consecutive checks. Early stopping.")
+                    break
 
-
-    # Save the model after training
-    torch.save(model.state_dict(), DEFAULT_MODEL_PATH)
-    print(f"Model saved to {DEFAULT_MODEL_PATH}")
+    # Copy the best model to be the final model
+    import shutil
+    shutil.copy('intermediate_data/transformer_model_best.pth', DEFAULT_MODEL_PATH)
+    print(f"Best model copied to {DEFAULT_MODEL_PATH}")
 
 else:
     # Load mode
